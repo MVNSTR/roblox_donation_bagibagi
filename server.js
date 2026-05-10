@@ -28,6 +28,55 @@ function makeDonorKey(name) {
     .replace(/[^a-z0-9_]/g, "");
 }
 
+async function resolveRobloxUser(username) {
+  const rawName = String(username || "").trim();
+
+  if (rawName === "") {
+    return {
+      robloxUserId: null,
+      robloxUsername: "Unknown"
+    };
+  }
+
+  try {
+    const response = await fetch(
+      "https://users.roblox.com/v1/usernames/users",
+      {
+        method: "POST",
+        headers: {
+          "Content-Type": "application/json"
+        },
+        body: JSON.stringify({
+          usernames: [rawName],
+          excludeBannedUsers: false
+        })
+      }
+    );
+
+    const result = await response.json();
+
+    if (Array.isArray(result.data) && result.data[0]) {
+      return {
+        robloxUserId: result.data[0].id,
+        robloxUsername: result.data[0].name
+      };
+    }
+
+    return {
+      robloxUserId: null,
+      robloxUsername: rawName
+    };
+
+  } catch (err) {
+    console.error("Roblox resolve failed:", err);
+
+    return {
+      robloxUserId: null,
+      robloxUsername: rawName
+    };
+  }
+}
+
 function verifyBagibagiSignature(req) {
   const signature = req.headers["x-bagibagi-signature"];
 
@@ -53,9 +102,6 @@ app.get("/", (req, res) => {
   res.send("Bagibagi Roblox API is running");
 });
 
-/**
- * Bagibagi webhook endpoint
- */
 app.post("/bagibagi/webhook", async (req, res) => {
   try {
     if (!verifyBagibagiSignature(req)) {
@@ -68,8 +114,15 @@ app.post("/bagibagi/webhook", async (req, res) => {
       body.transaction_id || `manual-${Date.now()}`
     );
 
-    const donorName = String(body.name || "Unknown").trim();
+    const rawName = String(body.name || "Unknown").trim();
+    const resolved = await resolveRobloxUser(rawName);
+
+    const robloxUserId = resolved.robloxUserId;
+    const robloxUsername = resolved.robloxUsername;
+
+    const donorName = robloxUsername;
     const donorKey = makeDonorKey(donorName);
+
     const amount = Number(body.amount) || 0;
     const message = String(body.message || "");
     const mediaShareUrl = body.mediaShareUrl || null;
@@ -84,6 +137,10 @@ app.post("/bagibagi/webhook", async (req, res) => {
         transaction_id: transactionId,
         donor_key: donorKey,
         donor_name: donorName,
+
+        roblox_user_id: robloxUserId,
+        roblox_username: robloxUsername,
+
         amount,
         message,
         media_share_url: mediaShareUrl,
@@ -106,7 +163,10 @@ app.post("/bagibagi/webhook", async (req, res) => {
       success: true,
       transactionId,
       donorName,
-      amount
+      robloxUserId,
+      robloxUsername,
+      amount,
+      message
     });
 
   } catch (err) {
@@ -115,9 +175,6 @@ app.post("/bagibagi/webhook", async (req, res) => {
   }
 });
 
-/**
- * Pending donation untuk Roblox
- */
 app.get("/bagibagi/pending", async (req, res) => {
   try {
     if (req.query.secret !== ROBLOX_SECRET) {
@@ -126,7 +183,7 @@ app.get("/bagibagi/pending", async (req, res) => {
 
     const { data, error } = await supabase
       .from("bagibagi_donations")
-      .select("id, transaction_id, donor_key, donor_name, amount, message, recalled, created_at")
+      .select("id, transaction_id, donor_key, donor_name, roblox_user_id, roblox_username, amount, message, recalled, created_at")
       .eq("claimed_by_roblox", false)
       .eq("deleted", false)
       .order("id", { ascending: true })
@@ -144,9 +201,6 @@ app.get("/bagibagi/pending", async (req, res) => {
   }
 });
 
-/**
- * Mark donation sudah diproses Roblox
- */
 app.post("/bagibagi/claim", async (req, res) => {
   try {
     const { secret, ids } = req.body;
@@ -179,9 +233,6 @@ app.post("/bagibagi/claim", async (req, res) => {
   }
 });
 
-/**
- * Leaderboard
- */
 app.get("/bagibagi/leaderboard", async (req, res) => {
   try {
     if (req.query.secret !== ROBLOX_SECRET) {
@@ -192,7 +243,7 @@ app.get("/bagibagi/leaderboard", async (req, res) => {
 
     const { data, error } = await supabase
       .from("bagibagi_totals")
-      .select("donor_key, donor_name, total_amount")
+      .select("donor_key, donor_name, roblox_user_id, roblox_username, total_amount")
       .order("total_amount", { ascending: false })
       .limit(limit);
 
@@ -208,9 +259,6 @@ app.get("/bagibagi/leaderboard", async (req, res) => {
   }
 });
 
-/**
- * Admin manual add
- */
 app.post("/admin/bagibagi/add", async (req, res) => {
   try {
     const { secret, donorName, amount, message } = req.body;
@@ -219,7 +267,13 @@ app.post("/admin/bagibagi/add", async (req, res) => {
       return res.status(401).json({ error: "Unauthorized" });
     }
 
-    const name = String(donorName || "Unknown").trim();
+    const rawName = String(donorName || "Unknown").trim();
+    const resolved = await resolveRobloxUser(rawName);
+
+    const robloxUserId = resolved.robloxUserId;
+    const robloxUsername = resolved.robloxUsername;
+
+    const name = robloxUsername;
     const donorKey = makeDonorKey(name);
     const value = Number(amount) || 0;
 
@@ -235,6 +289,10 @@ app.post("/admin/bagibagi/add", async (req, res) => {
         transaction_id: transactionId,
         donor_key: donorKey,
         donor_name: name,
+
+        roblox_user_id: robloxUserId,
+        roblox_username: robloxUsername,
+
         amount: value,
         message: message || "",
         source: "admin",
@@ -257,9 +315,6 @@ app.post("/admin/bagibagi/add", async (req, res) => {
   }
 });
 
-/**
- * Admin edit donation
- */
 app.post("/admin/bagibagi/edit", async (req, res) => {
   try {
     const { secret, id, donorName, amount, message } = req.body;
@@ -278,7 +333,13 @@ app.post("/admin/bagibagi/edit", async (req, res) => {
       return res.status(404).json({ error: "Donation not found" });
     }
 
-    const name = String(donorName || oldRow.donor_name).trim();
+    const rawName = String(donorName || oldRow.donor_name).trim();
+    const resolved = await resolveRobloxUser(rawName);
+
+    const robloxUserId = resolved.robloxUserId;
+    const robloxUsername = resolved.robloxUsername;
+
+    const name = robloxUsername;
     const donorKey = makeDonorKey(name);
     const value = Number(amount) || Number(oldRow.amount) || 0;
 
@@ -287,6 +348,10 @@ app.post("/admin/bagibagi/edit", async (req, res) => {
       .update({
         donor_key: donorKey,
         donor_name: name,
+
+        roblox_user_id: robloxUserId,
+        roblox_username: robloxUsername,
+
         amount: value,
         message: message ?? oldRow.message,
         claimed_by_roblox: false,
@@ -309,9 +374,6 @@ app.post("/admin/bagibagi/edit", async (req, res) => {
   }
 });
 
-/**
- * Admin delete donation
- */
 app.post("/admin/bagibagi/delete", async (req, res) => {
   try {
     const { secret, id } = req.body;
@@ -353,9 +415,6 @@ app.post("/admin/bagibagi/delete", async (req, res) => {
   }
 });
 
-/**
- * Admin recall donation
- */
 app.post("/admin/bagibagi/recall", async (req, res) => {
   try {
     const { secret, id } = req.body;
@@ -389,7 +448,7 @@ app.post("/admin/bagibagi/recall", async (req, res) => {
 async function rebuildBagibagiTotal(donorKey) {
   const { data, error } = await supabase
     .from("bagibagi_donations")
-    .select("amount, donor_name")
+    .select("amount, donor_name, roblox_user_id, roblox_username")
     .eq("donor_key", donorKey)
     .eq("deleted", false);
 
@@ -397,12 +456,18 @@ async function rebuildBagibagiTotal(donorKey) {
 
   const total = data.reduce((sum, row) => sum + Number(row.amount || 0), 0);
   const donorName = data[0]?.donor_name || donorKey;
+  const robloxUserId = data[0]?.roblox_user_id || null;
+  const robloxUsername = data[0]?.roblox_username || donorName;
 
   await supabase
     .from("bagibagi_totals")
     .upsert({
       donor_key: donorKey,
       donor_name: donorName,
+
+      roblox_user_id: robloxUserId,
+      roblox_username: robloxUsername,
+
       total_amount: total,
       updated_at: new Date().toISOString()
     }, {
